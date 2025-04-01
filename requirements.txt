@@ -1,0 +1,12 @@
+ipdb==0.13.13
+ipython==8.12.3
+matplotlib==3.10.1
+Pillow==11.1.0
+qwen_agent==0.0.15
+qwen_vl_utils==0.0.10
+torch==2.5.1
+tqdm==4.67.1
+transformers==4.50.0.dev0
+utils==1.0.2
+vllm==0.7.3
+~ransformers==4.49.0
