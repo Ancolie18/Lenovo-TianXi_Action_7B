@@ -55,5 +55,5 @@ python run_inference.py \
 | `--gt_type`      | Ground truth type (`positive`, `negative`)                  | `positive`                                                             |
 | `--verbose`      | If set, prints model input/output for each sample           | `False`                                                                |
 
-## License
+## 📝 License
 This project is licensed under GPL license.
