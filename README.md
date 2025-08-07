@@ -1,8 +1,11 @@
-# lenovo_grounding
+# lenovo TianXi_Action_Grounding_7B 
 
 This repository provides an evaluation script to run inference on the [ScreenSpot-Pro](https://github.com/zzxslp/ScreenSpot-Pro) benchmark using a custom multimodal model. 
 It evaluates the model's performance and logs the results into a JSON file for further analysis.
 
+Our paper: [*SEA: Self-Evolution Agent with Step-wise Reward for Computer Use*](https://arxiv.org/abs/2508.04037) (https://arxiv.org/abs/2508.04037)
+
+Our model: [*TianXi_Action_Grounding_7B*](https://huggingface.co/tangliang/TianXi_Action_Grounding_7B) (https://huggingface.co/tangliang/TianXi_Action_Grounding_7B)
 ## 🔍 Project Purpose
 
 This script is designed to:
@@ -10,10 +13,7 @@ This script is designed to:
 - Evaluate its performance across multiple instruction styles and languages.
 - Save evaluation results to a structured log file for easy review.
 
-Supported models include:
-- [`grounding7b`](https://huggingface.co/tangliang/grounding7b) (https://huggingface.co/tangliang/grounding7b)
-- [`gounding72b`](https://huggingface.co/tangliang/gounding72b) (https://huggingface.co/tangliang/gounding72b)
-
+We have made modifications base on  [*ScreenSpot-Pro-GUI-Grounding*](https://github.com/likaixin2000/ScreenSpot-Pro-GUI-Grounding).
 
 
 ## 🚀 Usage

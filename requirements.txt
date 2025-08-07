@@ -9,4 +9,3 @@ tqdm==4.67.1
 transformers==4.50.0.dev0
 utils==1.0.2
 vllm==0.7.3
-~ransformers==4.49.0

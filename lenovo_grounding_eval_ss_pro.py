@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import random
 import logging
 import argparse
 import copy
@@ -14,12 +13,6 @@ import torch
 from transformers import Qwen2_5_VLProcessor, Qwen2_5_VLForConditionalGeneration
 from vllm import LLM, SamplingParams
 
-from qwen_agent.llm.fncall_prompts.nous_fncall_prompt import (
-    NousFnCallPrompt,
-    Message,
-    ContentItem,
-)
-import torch.multiprocessing as mp
 
 
 def collect_results_to_eval(results, platform=None, group=None, application=None, language=None, gt_type=None, instruction_style=None, ui_type=None):
@@ -291,39 +284,37 @@ def evaluate(results):
     return result_report
 
 
+def get_input(args, padded_size, screenshot_path, user_query, processor):
+    x, y = padded_size
+    
+    qwen_prompts = "You are a helpful assistant."
 
-def adjust_resolution(resolution):
-    x, y = resolution
-    x = x if x % 28 == 0 else x + (28 - x % 28)
-    y = y if y % 28 == 0 else y + (28 - y % 28)
-    return x, y
+    user_prompt = f"The image is a screenshot of a computer or mobile phone interface, with a resolution of {x}x{y}. Please provide the coordinates of the object to be operated according to the command, which is as follows: {user_query}.\n"
 
-
-def get_input(args, img_size, screenshot_path, user_query, processor):
-    x, y = adjust_resolution(img_size)
-    qwen_sys_prompt = "You are a helpful assistant."
-    user_query_new =f"The image is a screenshot of a computer or mobile phone interface, with a resolution of {x}x{y}. Please provide the coordinates of the object to be operated according to the command, which is as follows: {user_query}.\nYou must output in the following format, and the specific format is as follows: <|box_start|>(x1,y1),(x2,y2)<|box_end|>\n"
+    user_prompt_repeat = f"\nRepeat the task again for you:\nPlease provide the coordinates of the object to be operated according to the command, which is as follows: {user_query}. You must output in the following format, and the specific format is as follows: <|box_start|>(x1,y1),(x2,y2)<|box_end|>\n"
 
     message = [
         {
             "role": "system",
-            "content": qwen_sys_prompt
+            "content": qwen_prompts
         },
         {
             "role": "user",
             "content": [
+                {"type": "text", "text": f"{user_prompt}"},
                 {"type": "image", "image": screenshot_path},
-                {"type": "text", "text": f"{user_query_new}"}
+                {"type": "text", "text": f"{user_prompt_repeat}"},
             ]
         }
     ]
+
     text = processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
-    
+    if args.verbose:
+        print(text) 
     return text
 
 
 def extract_output(args, output_text):
-
     # prompt output format：
     # if skip_special_tokens=False, output_text: <|box_start|>(593,264),(681,354)<|box_end|><|im_end|>
     # if skip_special_tokens=True, output_text: (593,264),(681,354)
@@ -350,55 +341,96 @@ def extract_output(args, output_text):
 
     return point_in_pixel
 
+    
+def process_image(image_path, max_size=7494400):
+    """scale image and padding to 28x28"""
 
-def perform_gui_grounding_troch(args, img_size, screenshot_path, user_query, model, processor):
+    with Image.open(image_path) as img:
+        width, height = img.size
+        original_pixels = width * height
+        scale_factor = 1.0
 
-    text = get_input(args, img_size, screenshot_path, user_query, processor)
-    input_image = Image.open(screenshot_path)
-    inputs = processor(text=[text], images=[input_image], padding=True, return_tensors="pt").to('cuda')
+        if original_pixels > max_size:
+            scale_factor = (max_size / original_pixels) ** 0.5
+            new_width = max(1, int(width * scale_factor))
+            new_height = max(1, int(height * scale_factor))
+            print(f"scale image from {width}×{height} to {new_width}×{new_height}")
+        else:
+            new_width, new_height = width, height
+            print(f"image resolution: {width}×{height}, no need to scale")
 
-    # Generate output
-    output_ids = model.generate(**inputs, max_new_tokens=8192)
+        padded_width = ((new_width // 28) + 1) * 28 if new_width % 28 != 0 else new_width
+        padded_height = ((new_height // 28) + 1) * 28 if new_height % 28 != 0 else new_height
+
+        img = img.resize((new_width, new_height), Image.LANCZOS)
+        img_rgb = Image.new('RGB', (padded_width, padded_height), (0, 0, 0))
+        img_rgb.paste(img, (0, 0))
+
+        return img_rgb, scale_factor, (padded_width, padded_height)
+
+def perform_gui_grounding_torch(args, screenshot_path, user_query, model, processor):
+    """inference: image proccessing --> get inputs --> inference --> get output """
+
+    img_rgb, scale, padded_size = process_image(screenshot_path)
+    text = get_input(args, padded_size, screenshot_path, user_query, processor)
+
+    inputs = processor(
+        text=[text],
+        images=[img_rgb],
+        max_length=40000,
+        truncation=False,
+        padding=True,
+        return_tensors="pt"
+    ).to('cuda')
+
+    output_ids = model.generate(**inputs, max_new_tokens=50)
     generated_ids = [output_ids[len(input_ids):] for input_ids, output_ids in zip(inputs.input_ids, output_ids)]
     output_text = processor.batch_decode(generated_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)[0]
 
     point_pred = extract_output(args, output_text)
 
+    if scale != 1:
+        point_pred = tuple(int(coord / scale) for coord in point_pred)
+
     if args.verbose:
-        print("======= input text:",text)  
-        print("======= Output text: ", output_text)
+        print("======= input text:", text)  
+        print("======= Output text:", output_text)
 
-    return output_text, point_pred 
+    return output_text, point_pred
 
 
-def eval_sample_positive_gt_qwen2_5(sample, point_pred):
+def eval_sample_positive_gt(sample, point_pred):
     bbox = sample["bbox"]
     bbox = [bbox[0], bbox[1], bbox[2], bbox[3]]  # x1, y1, x2, y2
     
-    print("\n======= point_pred:", point_pred)
-    print("======= bbox_gt:", bbox)
     if point_pred is None or len(point_pred)!=2:
         correctness = "wrong_format"
     elif (bbox[0] <= point_pred[0] <= bbox[2]) and (bbox[1] <= point_pred[1] <= bbox[3]):
         correctness = "correct"
     else:
         correctness = "wrong"
-    print("======= correctness:", correctness)
+
+    print("=======point_pred:", point_pred)
+    print("=======bbox_gt:", bbox)
+    print("=======correctness:", correctness)
     return correctness
 
+def loadmodel(args):
+    pass
+    
 
 def main(args):
 
-    # loading model
+    # load model
     print("using torch inference...")
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         args.model_path,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
         device_map="auto"
-    )
+    )        
     processor = Qwen2_5_VLProcessor.from_pretrained(args.model_path)
-    logging.info("Model loaded successfully !")
+    logging.info("模型加载成功!")
 
     # load ss-pro tasks
     if args.task == "all":
@@ -470,7 +502,7 @@ def main(args):
             print("img_path:",img_path)
             print("user_query:",user_query)
         
-        output_text, point_pred = perform_gui_grounding_troch(args, img_size, img_path, user_query, model, processor)
+        output_text, point_pred = perform_gui_grounding_torch(args, img_path, user_query, model, processor)
         
         sample_result = {
             "img_path": img_path, 
@@ -484,18 +516,19 @@ def main(args):
             "ui_type": sample["ui_type"], 
             "task_filename": sample["task_filename"], 
             "pred": point_pred, 
-            "raw_response": output_text
+            "raw_response": output_text,
+            "gt":sample["bbox"]
         }
                 
-        correctness = eval_sample_positive_gt_qwen2_5(sample, point_pred)
+        correctness = eval_sample_positive_gt(sample, point_pred)
         
         if correctness == "correct":
             corr_action += 1
-            logging.info("correct, accuracy：%.2f", corr_action / num_action)
+            logging.info("correct, current acc: %.2f", corr_action / num_action)
         elif correctness == "wrong_format":
-            logging.info("wrong_format, accuracy：%.2f", corr_action / num_action)
+            logging.info("wrong_format, current acc: %.2f", corr_action / num_action)
         else:
-            logging.info("wrong, accuracy：%.2f", corr_action / num_action)
+            logging.info("wrong, current acc: %.2f", corr_action / num_action)
 
 
         sample_result.update({
@@ -529,28 +562,27 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser()
+    
     parser.add_argument('--model_path', type=str, default="/path/to/your/model/")
-
     parser.add_argument('--screenspot_imgs', type=str, default="/path/to/ScreenSpot-Pro/images")
     parser.add_argument('--screenspot_test', type=str, default="/path/to/ScreenSpot-Pro/annotations")
-    parser.add_argument('--task', type=str, default="all")
-    parser.add_argument('--log_path', type=str, default="./eval_results/ss-pro/Qwen2.5-VL-7B-Instruct.json")
 
+    parser.add_argument('--task', type=str, default="all")
     parser.add_argument('--inst_style', type=str, default="instruction", choices=INSTRUCTION_STYLES + ['all'], help="Instruction style to use.")
     parser.add_argument('--language', type=str, default="en" , choices=LANGUAGES + ['all'], help="Language to use.")
     parser.add_argument('--gt_type', type=str, default="positive", choices=GT_TYPES + ['all'], help="Ground truth type: 'positive' or 'negative'.")
 
+    parser.add_argument('--log_path', type=str, default="./eval_results/ss-pro/eval_result.json")
     parser.add_argument('-v', '--verbose', action='store_true', help="Show input/output of model. By default this is false(enable if set).")
     
     args = parser.parse_args()
 
     model_name = args.model_path.split("/")[-1]
-    args.log_path = "./eval_results/" + model_name +".json"
+    args.log_path = "./eval_results/ss-pro/" + model_name +".json"
     logging.info("args：%s", args)
 
     main(args)
 
     end_time = time.time()
     duration_min = (end_time - start_time) / 60
-    print(f"Inference completed, duration：{duration_min} mins")
-
+    print(f"inference completed, taking {duration_min} mins")
