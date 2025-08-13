@@ -57,3 +57,14 @@ python run_inference.py \
 
 ## 📝 License
 This project is licensed under GPL license.
+
+## Paper
+Please cite our paper:
+```
+@article{tang2025sea,
+  title={SEA: Self-Evolution Agent with Step-wise Reward for Computer Use},
+  author={Tang, Liang and Li, Shuxian and Cheng, Yuhao and Huo, Yukang and Wang, Zhepeng and Yan, Yiqiang and Huang, Kaer and Jing, Yanzhe and Duan, Tiaonan},
+  journal={arXiv preprint arXiv:2508.04037},
+  year={2025}
+}
+```
